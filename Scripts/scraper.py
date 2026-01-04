@@ -1,21 +1,13 @@
 import json
 import os
-from dump import Dump
+from dump import Dump, DUMP_DIR, LOCAL_DIR, CATALOG_PATH
 import threading
-#open dump on startup
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
-def OpenDump():
-    dump = Dump()
-    dump.parseDump()
-
-#Allow dump to run as needed with a listener
-def ThreadTimer():
-    #listen for new files every minute
-    dump_listener = threading.Timer(60.0, ThreadTimer)
-    dump_listener.start()
 
 class Scraper:
-    _catalog = []
+    _catalog = {}
     def __init__(self, search=None):
         if search:
             self.setCatalogPartial(search)
@@ -25,20 +17,14 @@ class Scraper:
     def catalog(self):
         return self._catalog
     def setCatalogFull(self):
-        path = os.path.join('origin', 'local')
-        if os.path.exists(path):
-            for file in os.listdir(path):
-                file_path = os.path.join(path, file)
-                if os.path.isfile(file_path):
-                    self._catalog.append({
-                        'file_name': file,
-                        'identifier': '',
-                        'file_url': file_path
-                    })
+        path = os.path.join('origin', 'catalog.json')
+        _catalog = json.load(open(path, 'r', encoding='utf-8'))
+        self._catalog = _catalog
     def setCatalogPartial(self, search):
         self.setCatalogFull()
         new_catalog = []
         for item in self._catalog:
+            #need a better search algorithm later
             if search.lower() in item['identifier'].lower():
                 new_catalog.append(item)
         self._catalog = new_catalog
@@ -53,11 +39,34 @@ class ScraperLight():
         self.indexImages()
 
     def indexImages(self):
-        _catalog = json.load(open(os.path.join('origin', 'local', 'catalog.json'), 'r', encoding='utf-8'))
+        _catalog = json.load(open(CATALOG_PATH, 'r', encoding='utf-8'))
         self._catalog = _catalog
     def getLength(self):
         return len(self._catalog)
     def grab_catalog_range(self, start, end):
         return self._catalog[start:end]
+
+class DumpHandler(FileSystemEventHandler):
+    #Override
+    def on_created(self, event):
+        print(f"New file detected: {event.src_path}")
+        if not event.is_directory:
+            dumper = Dump()
+            dumper.parseDump()
+class FileListener:
+    def __init__(self):
+        os.makedirs(DUMP_DIR, exist_ok=True)
+        os.makedirs(LOCAL_DIR, exist_ok=True)
+        self.watch_path = DUMP_DIR
+        self.observer = Observer()
+        self.observer.schedule(DumpHandler(), self.watch_path, recursive=True)
+    def start(self):
+        self.observer.start()
+        print(f"Listening for files in {self.watch_path}...")
     
-print(os.path.exists(os.path.join('origin', 'local')))
+    def stop(self):
+        self.observer.stop()
+        self.observer.join()
+
+listener = FileListener()
+listener.start()
