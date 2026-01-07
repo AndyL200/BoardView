@@ -78,7 +78,7 @@ class DrawingBoard(Qtw.QWidget):
             
             painter.setPen(self.pen)
             painter.setBrush(self.brush) #last two are PEN and BRUSH
-            print("Drawing from buffer with", len(self._pending_draws), "points.")
+            print("Drawing from buffer with", self._pending_draws)
             
             for i in range(len(self._pending_draws)):
                 if "PEN" in self._pending_draws[i]:
@@ -86,7 +86,6 @@ class DrawingBoard(Qtw.QWidget):
                         print("Invalid PEN data:", self._pending_draws[i]["PEN"])
                     pen_data = QtGui.QPen(QtGui.QColor(self._pending_draws[i]["PEN"][0]), self._pending_draws[i]["PEN"][1], Qtc.Qt.PenStyle(self._pending_draws[i]["PEN"][2]), Qtc.Qt.PenCapStyle(self._pending_draws[i]["PEN"][3]), Qtc.Qt.PenJoinStyle(self._pending_draws[i]["PEN"][4]))
                     painter.setPen(pen_data)
-                    continue
                 if "BRUSH" in self._pending_draws[i]:
                     try:
                         brush_data = QtGui.QBrush(QtGui.QColor(self._pending_draws[i]["BRUSH"]))
