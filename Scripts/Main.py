@@ -45,7 +45,7 @@ class MainWindow(Qtw.QMainWindow):
         self.styles = {}
         self.setStyleSheet("font-family: helvetica;")
         self.setWindowTitle("Board View")
-        self.setWindowIcon(QtGui.QIcon(os.path.join('origin', 'assets', 'pencil.png')))
+        self.setWindowIcon(QtGui.QIcon(os.path.join(os.path.dirname(__file__), '../assets', 'pencil.png')))
         self.setGeometry(100, 100, 800, 600)
         self.setSizePolicy(Qtw.QSizePolicy.Policy.Expanding, Qtw.QSizePolicy.Policy.Expanding)
         
@@ -218,14 +218,14 @@ class GameWrapper(Qtw.QFrame):
         self.Board = DrawingBoard(self)
         self.game.set_board(self.Board)
 
-        # Connect new_drawing signal to send buffer
-        self.Board.new_drawing.connect(self.game.send_board_data)
+        self.Board.new_drawing.connect(self.send_board_data) #Connect signal from DrawingBoard to send_board_data method
+
 
         vbox.addWidget(self.Board, stretch=8)
-        pallette = ColorPallette(self) #ColorPallette widget (GridLayout)
+        self.pallette = ColorPallette(self) #ColorPallette widget (GridLayout)
         
-        pallette.change_color_event.connect(self.Board.color_change_event)
-        vbox.addWidget(pallette, stretch=1, alignment=Qtc.Qt.AlignmentFlag.AlignLeft)
+        self.pallette.change_color_event.connect(self.Board.color_change_event)
+        vbox.addWidget(self.pallette, stretch=1, alignment=Qtc.Qt.AlignmentFlag.AlignLeft)
         
         back_btn = Qtw.QPushButton("Back")
         back_btn.clicked.connect(self.end_game)
@@ -233,18 +233,36 @@ class GameWrapper(Qtw.QFrame):
         self.setLayout(vbox)
     def end_game(self):
         self.game.stop_game()
+        self.pallette.deleteLater()
+        self.deleteLater()
         self.master.showFrame("StartPage")
+    @Qtc.pyqtSlot(list, name="send_board_data")
+    def send_board_data(self, data):
+        self.game.send_board_data(data)
 
 class ColorPallette(Qtw.QWidget):
     change_color_event = Qtc.pyqtSignal(QtGui.QColor, name="color_change_event")
-    COLOR_OPTIONS = [QtGui.QColor("#000000"), QtGui.QColor("#FFFFFF")]
+    COLOR_OPTIONS = [QtGui.QColor("#000000"), 
+        QtGui.QColor("#FFFFFF"),
+        QtGui.QColor("#ff0000"),
+        QtGui.QColor("#ff5e00"),
+        QtGui.QColor("#ffbb00"), 
+        QtGui.QColor("#e6ff00"),
+        QtGui.QColor("#88ff00"),
+        QtGui.QColor("#2aff00"),
+        QtGui.QColor("#00ff33"),
+        QtGui.QColor("#00ff90"),
+        QtGui.QColor("#00ffee"),
+        QtGui.QColor("#00b3ff"),
+        QtGui.QColor("#0055ff"),
+        QtGui.QColor("#0800ff"),
+        QtGui.QColor("#6600ff"),
+        QtGui.QColor("#c400ff"),
+        QtGui.QColor("#ff00dd"),
+        QtGui.QColor("#ff0080")]
     def __init__(self, master):
         super().__init__()
         self.master = master
-        for i in range(16):
-            color = QtGui.QColor.fromHsv(i * 22, 255, 255)
-            self.COLOR_OPTIONS.append(color)
-        
         layout = Qtw.QGridLayout()
         for i in range(2):
             for j in range(len(self.COLOR_OPTIONS)//2): #Should be symmetrical anyway so this should be fine
@@ -279,13 +297,13 @@ class ImageViewer(Qtw.QWidget):
         
         self.main_layout_hbox.setGeometry(self.geometry())
 
-        leftIcon = QtGui.QIcon('origin/assets/d_arrow_left_light.png')
+        leftIcon = QtGui.QIcon(os.path.join(os.path.dirname(__file__), '../assets/d_arrow_left_light.png'))
         leftbtn = Qtw.QPushButton()
         leftbtn.setStyleSheet("background:None; min-width:40px; min-height:40px;")
         leftbtn.setIcon(leftIcon)
         leftbtn.clicked.connect(self.decrementView)
 
-        rightIcon = QtGui.QIcon('origin/assets/d_arrow_right_light.png')
+        rightIcon = QtGui.QIcon(os.path.join(os.path.dirname(__file__), '../assets/d_arrow_right_light.png'))
         rightbtn = Qtw.QPushButton() 
         rightbtn.setStyleSheet("background:None; min-width:40px; min-height:40px;")
         rightbtn.setIcon(rightIcon)
@@ -455,15 +473,15 @@ class GifWorker(Qtc.QObject):
             file_url = self.json['file_url']
         except:
             file_url = self.json['@file_url']
-        if not os.path.exists(os.path.join('video_assets', os.path.basename(file_url))):
-            filename = os.path.join('video_assets', os.path.basename(file_url))
+        if not os.path.exists(os.path.join(os.path.dirname(__file__), '../', 'video_assets', os.path.basename(file_url))):
+            filename = os.path.join(os.path.dirname(__file__), '../', 'video_assets', os.path.basename(file_url))
             res = requests.get(file_url, stream=True, timeout=10)
 
             with open(filename, 'wb') as file:
                 file.write(res.content)
 
         else:
-            filename = os.path.join('video_assets', os.path.basename(file_url))
+            filename = os.path.join(os.path.dirname(__file__), '../', 'video_assets', os.path.basename(file_url))
 
         self.handle_gif.emit(self.label, filename)
         print("Inner Thread" + str(threading.get_ident()))
@@ -583,19 +601,21 @@ class Saves(Qtw.QFrame):
         
         
         self.save_widget = self.makeDefaultCentWidget()
-        
-
+        self.save_widget.setMinimumSize(600,400)
+        save_hbox = Qtw.QHBoxLayout()
+        save_hbox.addWidget(self.save_widget)
         self.save_layout = Qtw.QVBoxLayout()
         
         
         #top left back button
         back_btn = Qtw.QPushButton("Back")
         back_btn.clicked.connect(self.switch_back)
-        self.save_layout.addWidget(back_btn, alignment=Qtc.Qt.AlignmentFlag.AlignLeft | Qtc.Qt.AlignmentFlag.AlignTop)
+        self.save_layout.addWidget(back_btn, alignment=Qtc.Qt.AlignmentFlag.AlignLeft | Qtc.Qt.AlignmentFlag.AlignTop, stretch=1)
 
         self.save_layout.addStretch(1)
         #Add save grid
-        self.save_layout.addWidget(self.save_widget, alignment=Qtc.Qt.AlignmentFlag.AlignHCenter)
+        self.save_widget.setSizePolicy(Qtw.QSizePolicy.Policy.Expanding,Qtw.QSizePolicy.Policy.Expanding)
+        self.save_layout.addLayout(save_hbox, stretch=10)
         #center grid between buttons
         self.save_layout.addStretch(1)
 
@@ -628,11 +648,11 @@ class Saves(Qtw.QFrame):
         self.get_page()
 
         #Add buttons to layout
-        self.save_layout.addLayout(self.page_navigation_layout)
-        #Resizing Filter
-        self.installEventFilter(self)
+        self.save_layout.addLayout(self.page_navigation_layout, stretch=2)
+        self.save_widget.resized.connect(self.resize_grid)
         self.save_layout.setSpacing(10)
         self.setSizePolicy(Qtw.QSizePolicy.Policy.Expanding, Qtw.QSizePolicy.Policy.Expanding)
+        
         self.setLayout(self.save_layout)
     def next_page(self):
         if self.current_page + 1 < self.page_count:
@@ -662,8 +682,9 @@ class Saves(Qtw.QFrame):
                     pixmap = QtGui.QPixmap.fromImage(img)
                     if not pixmap.isNull():
                         print("Loaded image for saves grid:", img_path)
-                        scaled_pixmap = pixmap.scaled(min(pixmap.width(), self.save_widget.width()//(self.grid_cols)), min(pixmap.height(), self.save_widget.height()//(self.grid_rows)), aspectRatioMode=Qtc.Qt.AspectRatioMode.KeepAspectRatio, transformMode=Qtc.Qt.TransformationMode.SmoothTransformation)
                         clabel = ClickableLabels(img_index, self.save_widget.layout())
+                        clabel.setProperty("original_pixmap", pixmap)
+                        scaled_pixmap = pixmap.scaled(self.save_widget.width()//(self.grid_cols), self.save_widget.height()//(self.grid_rows), Qtc.Qt.AspectRatioMode.IgnoreAspectRatio, Qtc.Qt.TransformationMode.SmoothTransformation)
                         clabel.setPixmap(scaled_pixmap)
                         self.save_widget.layout().addWidget(clabel, i, j)
                     else:
@@ -687,30 +708,32 @@ class Saves(Qtw.QFrame):
         elif not self.master.backgroundTheme:
             c.setStyleSheet("background-color:#27282b")
         
-        c.setSizePolicy(Qtw.QSizePolicy.Policy.Expanding,Qtw.QSizePolicy.Policy.Expanding)
         c.setLayout(savedGrid)
         return c
-   
-    def eventFilter(self, event, source):
-        return super().eventFilter(event, source)
-    def resizeEvent(self, event):
-        self.save_widget.resizeEvent(event)
-        aspect = self.save_widget.width()/self.save_widget.height()
-        new_width = event.size().width()
-        new_height = event.size().height()
-        if new_width/aspect <= new_height:
-            new_height = new_width/aspect
-        else:
-            new_width = new_height * aspect
-        
-        self.save_widget.setMaximumSize(int(new_width), int(new_height))
-        super().resizeEvent(event)
+    @Qtc.pyqtSlot(name="resize_index_widget")
+    def resize_grid(self):
+        grid = self.save_widget.layout()
+        if not grid:
+            return
+        for i in range(grid.count()):
+            item = grid.itemAt(i)
+            widget = item.widget()
+            if widget and isinstance(widget, ClickableLabels):
+                original_pixmap = widget.property("original_pixmap")
+                if original_pixmap:
+                    scaled_pixmap = original_pixmap.scaled(self.save_widget.width()//(self.grid_cols), self.save_widget.height()//(self.grid_rows), Qtc.Qt.AspectRatioMode.IgnoreAspectRatio, Qtc.Qt.TransformationMode.SmoothTransformation)
+                    widget.setPixmap(scaled_pixmap)
         
     
 class IndexedWidgets(Qtw.QWidget):
+    resized = Qtc.pyqtSignal(name="resize_index_widget")
     def __init__(self, index, master=None):
         super().__init__(master)
         self.index = index
+    def resizeEvent(self, a0):
+        super().resizeEvent(a0)
+        self.resized.emit()
+         
 class SaveGrid(Qtw.QGridLayout):
     def __init__(self, master=None):
         super().__init__(master)
@@ -722,9 +745,7 @@ class SaveGrid(Qtw.QGridLayout):
             glow.setOffset(0,0)
             glow.setColor(QtGui.QColor(28, 100, 212, 1))
             master.setGraphicsEffect(glow)
-        
-        
-    
+
 
 engine = QQmlApplicationEngine()
 
@@ -738,6 +759,9 @@ we.show()
 app.exec()
 
 app.exit()
+if isinstance(we.centralWidget(), GameWrapper):
+    we.centralWidget().end_game()
+    we.centralWidget().deleteLater()
 
 
 

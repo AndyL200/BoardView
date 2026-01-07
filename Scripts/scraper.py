@@ -17,7 +17,7 @@ class Scraper:
     def catalog(self):
         return self._catalog
     def setCatalogFull(self):
-        path = os.path.join('origin', 'catalog.json')
+        path = os.path.join(os.path.dirname(__file__), '../local', 'catalog.json')
         _catalog = json.load(open(path, 'r', encoding='utf-8'))
         self._catalog = _catalog
     def setCatalogPartial(self, search):

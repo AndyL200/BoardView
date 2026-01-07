@@ -1,23 +1,34 @@
 import socket
 import requests
 from threading import Thread, Lock
+import time
 from DrawBoard import DrawingBoard
 from concurrent.futures import ThreadPoolExecutor
 from PyQt6 import QtCore as Qtc
-import pickle
+import json
+import struct
+
 #P2P Network
 NAMEPOOL = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India", "Juliet", "Kilo", "Lima", "Mike", "November", "Oscar", "Papa", "Quebec", "Romeo", "Sierra", "Tango", "Uniform", "Victor", "Whiskey", "X-ray", "Yankee", "Zulu"]
 API_ENDPOINT = "http://127.0.0.1:8000"
 
-class Game:
+HEADER_LENGTH = 4
+PAYLOAD_LENGTH = 4096 - HEADER_LENGTH
+PACKET_SIZE = HEADER_LENGTH + PAYLOAD_LENGTH
+
+
+class Game(Qtc.QObject):
     _multiplayer_thread : Thread
-    
+    _draw_signal = Qtc.pyqtSignal(list, name="draw_from_buffer_signal")
+    _update_thread : Thread
     Board : DrawingBoard
     board_set = False
     _host = False
-    board_buffer : bytes = []
+    _game_end = False
+    board_buffer : list = []
     def __init__(self):
-        multiplayer = MultiPlayerP2P(self.board_buffer, 1024)
+        super().__init__()
+        multiplayer = MultiPlayerP2P(self.board_buffer, PAYLOAD_LENGTH)
         self.multiplayer = multiplayer.find_servers()
         if isinstance(self.multiplayer, MultiPlayerP2P_Server):
             print("Hosting server...")
@@ -30,47 +41,64 @@ class Game:
             print("No servers found.")
             return
         self._multiplayer_thread.start()
-        
+
         
     def set_board(self, board : DrawingBoard):
         self.Board = board
         self.board_set = True
+        self._draw_signal.connect(self.Board.draw_from_buffer, Qtc.Qt.ConnectionType.QueuedConnection)
+        self._update_thread = Thread(target=self.update_board)
+        self._update_thread.start()
     def update_board(self):
-        if not self.board_set or self.multiplayer.is_locked():
-            return
-        self.multiplayer.shared_lock.acquire()
-        self.Board.draw_from_buffer(self.board_buffer)
-        self.multiplayer.shared_lock.release()
+        while not self._game_end:
+            if len(self.board_buffer) == 0:
+                time.sleep(1/30)  # Update at ~30 FPS
+                continue
+            self.multiplayer.shared_lock.acquire()
+            buffer_copy = self.board_buffer.copy()
+            self.board_buffer.clear() #clear after drawing
+            self.multiplayer.shared_lock.release()
+
+            self._draw_signal.emit(buffer_copy)
+            time.sleep(1/30)  # Update at ~30 FPS
+
+    #new_drawing signal handler
     def send_board_data(self, data):
-        if not self.board_set or self.multiplayer.is_locked():
+        if not self.board_set:
             return
-        self.multiplayer.shared_lock.acquire()
-        def broadcast_board_data(self):
-            self.multiplayer.broadcast_board_buffer()
-
-        def send_board_data_client(self):
-            self.multiplayer.send(data)
-
+        print("send_board_data hit with", len(data), "points.")
+        
         if self._host:
-            broadcast_board_data(self)
+            self.multiplayer.broadcast_board_buffer(data)
         else:
-            send_board_data_client(self)
-        self.multiplayer.shared_lock.release()
+            self.multiplayer.send(data)
+        
     def stop_game(self):
-        self.multiplayer.shared_lock.acquire()
+        self._game_end = True
+        self.multiplayer._game_end = True
+        if self._update_thread.is_alive():
+            self._update_thread.join()
+        if self.multiplayer.is_locked():
+            self.multiplayer.shared_lock.release()
         self.multiplayer.shutdown()
-        self._multiplayer_thread.join()
+        if self._multiplayer_thread.is_alive():
+            self._multiplayer_thread.join()
+        
         self.Board.deleteLater()
         self.board_set = False
 class MultiPlayerP2P:
-    shared_lock : Lock = Lock()
-    _buffer : list
-    _buffer_size : int
-    _user_hostname : str = socket.gethostname()
-    _user_ip : str = socket.gethostbyname(_user_hostname)
-    def __init__(self, buffer, buffer_size=1024):
-        self._buffer = buffer
+    
+   
+    def __init__(self, recv_buffer, buffer_size):
+        self.shared_lock : Lock = Lock()
+        self._recv_buffer = recv_buffer
         self._buffer_size = buffer_size
+        self._recv_buffer : list
+        self._send_buffer : list
+        self._buffer_size : int
+        self._user_hostname : str = socket.gethostname()
+        self._user_ip : str = socket.gethostbyname(self._user_hostname)
+        self._game_end : bool = False
         pass
     def find_servers(self):
         try:
@@ -80,43 +108,91 @@ class MultiPlayerP2P:
         except:
             server = None
         if server:
-            return MultiPlayerP2P_Client(server)
-        return MultiPlayerP2P_Server()
+            return MultiPlayerP2P_Client(server, self._recv_buffer, self._buffer_size)
+        return MultiPlayerP2P_Server(self._recv_buffer, self._buffer_size)
     def is_locked(self):
         return self.shared_lock.locked()
     def shutdown(self):
         #virtual
         pass
+    def recv_exact(self, sock, n):
+        #Receive exactly n bytes from the socket
+        data = b''
+        while len(data) < n:
+            packet = sock.recv(n - len(data))
+            if not packet:
+                return None
+            data += packet
+        return data
+    def send_message(self, sock, message):
+        #Prefix messages with length header
+        
+        if not isinstance(message, bytes):
+            message = json.dumps(message).encode('utf-8')
+        
+        header = struct.pack("!I", len(message))
+        sock.sendall(header + message)
+    def recv_message(self, sock):
+        #Receive message with length header
+        header = self.recv_exact(sock, HEADER_LENGTH)
+        if not header:
+            return None
+        message_length = struct.unpack("!I", header)[0]
+        message = self.recv_exact(sock, message_length)
+        return message
 class MultiPlayerP2P_Client(MultiPlayerP2P):
     _client : socket.socket
-    _nickname : str | None = None
-    def __init__(self, server):
+    _nickname = None
+    def __init__(self, server, recv_buffer, buffer_size):
+        super().__init__(recv_buffer, buffer_size)
         self._client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._client.connect((server[0], server[1]))
         print(server)
         pass
     def send(self, data):
-        self._client.send(self._nickname.encode('ascii') + "NICK".encode('ascii') + data + "DRAW".encode('ascii'))
+        if self._nickname:
+            #  print("Client Sends", data)
+            message = {"NICK": self._nickname, "DRAW":data}
+            self.send_message(self._client, message)
+
     def receive(self):
-        while True:
+        while not self._game_end:
             try:
-                self.shared_lock.acquire()
-                message = self._client.recv(1024)
-                if message and not message.startswith(self._nickname.encode('ascii')) and message.endswith("DRAW".encode('ascii')):
-                    nickname_end = message.find("NICK".encode('ascii'))
-                    message = message[nickname_end + 4:-4]
-                    self._buffer.append(message)
-                    print(message)
-                elif message and message.startswith("NICK".encode('ascii')):
-                    self._nickname = message[4:].decode('ascii')
-                    print(f"Assigned nickname: {self._nickname}")
-                else:
+                raw = self.recv_message(self._client)
+                if not raw:
+                    print("Connection closed by server.")
+                    self._client.close()
+                    break
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    print("Received non-JSON message", raw)
                     continue
-                self.shared_lock.release()
-            except:
-                print("Error occurred.")
+
+                if not msg:
+                    continue
+
+                if "ASSIGN" in msg and msg["ASSIGN"]:
+                    self._nickname = msg["NICK"]
+                    print(f"Assigned nickname: {self._nickname}")
+                    ACK = {"NICK": self._nickname, "ACK": True}
+                    self.send_message(self._client, ACK)
+                    continue
+
+                if self._nickname:
+                    if "NICK" in msg and msg["NICK"] == "SERVER" and "DRAW" in msg:
+                        #Server broadcast
+                        draw_data = msg["DRAW"]
+                        with self.shared_lock:
+                            self._buffer.extend(draw_data) #should be PEN, BRUSH, IMG
+                        print("Client Receives", len(draw_data), "points from server")
+                        continue
+                    
+            except Exception as e:
+                print(f"Error occurred: {e}")
                 self._client.close()
                 break
+           
     def shutdown(self):
         self._client.close()
 class MultiPlayerP2P_Server(MultiPlayerP2P):
@@ -126,11 +202,14 @@ class MultiPlayerP2P_Server(MultiPlayerP2P):
     _clients = []
     _nicknames = []
     _full = False
-    def __init__(self):
+    def __init__(self, buffer, buffer_size):
+        super().__init__(buffer, buffer_size)
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server = server
-        res = requests.post(API_ENDPOINT + "/api/server/add", json={"host": self._user_ip, "port": 14800}) #placeholder
-        pass        
+        try:
+            res = requests.post(API_ENDPOINT + "/api/server/add", json={"host": self._user_ip, "port": 14800}) #placeholder
+        except:
+            pass
     def start_listening(self):
         self._server.bind((self._user_ip , 14800)) #placeholder
         print("Server started, listening for connections...")
@@ -138,45 +217,62 @@ class MultiPlayerP2P_Server(MultiPlayerP2P):
         self._client_pool = ThreadPoolExecutor(max_workers=5)
         self.receive_connection()
     def shutdown(self):
-        self._server.close()
-        self._client_pool.shutdown(wait=True)
         if self._server_thread:
             self._server_thread.join()
+        self._client_pool.shutdown(wait=False)
+        self._server.close()
         res = requests.post(API_ENDPOINT + "/api/server/remove", json={"host": self._user_ip, "port": 14800}) #placeholder
+        
 
     def handle(self, client):
-        while True:
+        while not self._game_end:
             try:
-                self.shared_lock.acquire()
-                message = client.recv(1024)
+                raw = self.recv_message(client)
                 # if len(self._buffer) == 5:
                 #     self.broadcast(self._buffer)
                 #     self._buffer.clear()
-                if message:
-                    
-                    nickname_end = message.find("NICK".encode('ascii'))
-                    draw_end = message.find("DRAW".encode('ascii'))
-                    if nickname_end != -1 and draw_end != -1:
-                        message = message[nickname_end + 4:draw_end]
-                        self._buffer.append(message) #should be a QPoint
-                    self.broadcast(message)
-                self.shared_lock.release()
-            except:
-                index = self._clients.index(client)
-                self._clients.remove(client)
-                client.close()
-                nickname = self._nicknames[index]
-                self.broadcast(f"{nickname} left!".encode('ascii'))
-                self._nicknames.remove(nickname)
-                break
+                if not raw:
+                    raise Exception("Client disconnected.")
+                msg = json.loads(raw)
+                if not msg:
+                    continue
+                if isinstance(msg, dict):
+                    if "NICK" in msg and "DRAW" in msg:
+                        draw_data = msg["DRAW"]
+                        with self.shared_lock:
+                            self._buffer.extend(draw_data) #use lock to prevent race conditions
+                        if "LOG" in draw_data[0]:
+                            print("Server Receives", len(draw_data[0]["LOG"]), "points from", msg["NICK"])
+                    if "NICK" in msg and "ACK" in msg and msg["ACK"]:
+                        nickname = msg["NICK"]
+                        print(f"{nickname} acknowledged connection.")
+                        self.broadcast({"msg": f"{nickname} joined!"})
+                        continue
+            #if len(buffer) >= buffer_size: broadcast and clear??
+                
+            except Exception as e:
+                try:
+                    index = self._clients.index(client)
+                    self._clients.remove(client)
+                    client.close()
+                    nickname = self._nicknames[index]
+                    self.broadcast({"msg": f"{nickname} left!"})
+                    self._nicknames.remove(nickname)
+                except:
+                    pass
         return
     def broadcast(self, message):
         for client in self._clients:
-            client.send(message)
-    def broadcast_board_buffer(self):
-        for message in self._buffer:
-            self.broadcast(message)
-        self._buffer.clear()
+            self.send_message(client, message)
+    def broadcast_board_buffer(self, data):
+        self.shared_lock.acquire()
+        self._buffer.extend(data)
+        broadcast_data = self._buffer.copy()
+        self._buffer.clear() #make sure buffer doesn't grow too large
+        self.shared_lock.release()
+        #HAVE TO RELEASE BEFORE BROADCASTING TO AVOID DEADLOCK
+        message = {"NICK": "SERVER", "DRAW": broadcast_data}
+        self.broadcast(message)
 
     def receive_connection(self):
         
@@ -185,7 +281,7 @@ class MultiPlayerP2P_Server(MultiPlayerP2P):
                 if len(self._clients) >= 5:  # Move inside loop
                     print("Server full, rejecting new connections")
                     client, address = self._server.accept()
-                    client.send(b"Server full")
+                    self.send_message(client, {"msg": "Server full"})
                     client.close()
                     if not self._full:
                         self._full = True
@@ -199,9 +295,10 @@ class MultiPlayerP2P_Server(MultiPlayerP2P):
                 self._nicknames.append(NAMEPOOL[len(self._nicknames) % len(NAMEPOOL)])
 
                 print(f"Nickname is {self._nicknames[-1]}")
-                self.broadcast(f"{self._nicknames[-1]} joined!".encode('ascii'))
-                client.send("Connected to server!".encode('ascii'))
-                client.send("NICK".encode('ascii') + self._nicknames[-1].encode('ascii'))
+                # self.broadcast(f"{self._nicknames[-1]} joined!") premature
+                self.send_message(client, {"msg": "Connected to server!"})
+                msg = {"NICK": self._nicknames[-1], "ASSIGN": True}
+                self.send_message(client, msg)
 
                 self._client_pool.submit(self.handle, client)
             except:
